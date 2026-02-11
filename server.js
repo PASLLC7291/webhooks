@@ -26,7 +26,8 @@ const SALE_ID = process.env.SALE_ID || "test";
 
 let redis;
 
-// --- Templates (no LLM) ---
+// --- Templates: BASTA actionType → agent event ---
+// BASTA uses actionType field with PascalCase names like BidOnItemV2, SaleUpdated, etc.
 const templates = {
   BidOnItemV2: (d) => ({
     type: "BID_RECEIVED",
@@ -41,13 +42,14 @@ const templates = {
     },
   }),
   ItemStatusChangedV2: (d) => {
-    if (d.newStatus === "ITEM_OPEN") {
+    const status = d.newStatus || d.status;
+    if (status === "ITEM_OPEN") {
       return {
         type: "ITEM_START",
-        data: { type: "ITEM_START", itemId: d.itemId, title: d.title || "" },
+        data: { type: "ITEM_START", itemId: d.itemId, title: d.title || d.content?.title || "" },
       };
     }
-    if (d.newStatus === "ITEM_CLOSING") {
+    if (status === "ITEM_CLOSING") {
       return {
         type: "GOING_ONCE",
         data: {
@@ -57,7 +59,7 @@ const templates = {
         },
       };
     }
-    if (d.newStatus === "ITEM_CLOSED") {
+    if (status === "ITEM_CLOSED") {
       if (d.closedWithBids) {
         return {
           type: "ITEM_CLOSED_SOLD",
@@ -66,7 +68,7 @@ const templates = {
             winnerName: d.winnerName || "the winner",
             finalPrice: d.finalPrice || 0,
             totalBids: d.totalBids || 0,
-            title: d.title || "",
+            title: d.title || d.content?.title || "",
           },
         };
       }
@@ -74,7 +76,7 @@ const templates = {
         type: "ITEM_CLOSED_PASSED",
         data: {
           type: "ITEM_CLOSED_PASSED",
-          title: d.title || "",
+          title: d.title || d.content?.title || "",
           reason: "No bids received",
         },
       };
@@ -82,32 +84,39 @@ const templates = {
     return null;
   },
   SaleStatusChangedV2: (d) => {
-    if (d.newStatus === "OPENED") {
+    const status = d.newStatus || d.status;
+    if (status === "OPENED") {
       return {
         type: "AUCTION_START",
         data: {
           type: "AUCTION_START",
-          auctionTitle: d.title || "the auction",
+          auctionTitle: d.title || d.content?.title || "the auction",
           totalItems: d.totalItems || 0,
         },
       };
     }
-    if (d.newStatus === "CLOSED") {
+    if (status === "CLOSED") {
       return { type: "AUCTION_END", data: { type: "AUCTION_END" } };
     }
     return null;
   },
-};
-
-// --- BASTA action name → template key mapping ---
-const actionMap = {
-  BID_ON_ITEM: "BidOnItemV2",
-  ITEM_STATUS_CHANGED: "ItemStatusChangedV2",
-  SALE_STATUS_CHANGED: "SaleStatusChangedV2",
-  // Also support the template keys directly (for manual curl tests)
-  BidOnItemV2: "BidOnItemV2",
-  ItemStatusChangedV2: "ItemStatusChangedV2",
-  SaleStatusChangedV2: "SaleStatusChangedV2",
+  SaleUpdated: (d) => ({
+    type: "SALE_UPDATED",
+    data: {
+      type: "SALE_UPDATED",
+      saleId: d.saleId,
+      title: d.content?.title || "",
+      saleType: d.saleType || "",
+    },
+  }),
+  ItemUpdated: (d) => ({
+    type: "ITEM_UPDATED",
+    data: {
+      type: "ITEM_UPDATED",
+      itemId: d.itemId,
+      title: d.content?.title || d.title || "",
+    },
+  }),
 };
 
 // --- Webhook endpoint ---
@@ -117,15 +126,13 @@ app.post("/webhook", async (req, res) => {
   // Log raw payload so we can see exactly what BASTA sends
   console.log(`[WEBHOOK RAW] ${JSON.stringify(payload)}`);
 
-  // Try every possible field name BASTA might use
-  const eventType = payload.type || payload.eventType || payload.action || payload.actionType || payload.event;
-  const data = payload.data || payload.payload || payload;
+  // BASTA uses "actionType" field. Also check "type" for manual curl tests.
+  const eventType = payload.actionType || payload.type;
+  const data = payload.data || payload;
 
   console.log(`[WEBHOOK] ${eventType}`);
 
-  // Map BASTA action names to template keys
-  const templateKey = actionMap[eventType] || eventType;
-  const mapper = templates[templateKey];
+  const mapper = templates[eventType];
   if (!mapper) {
     console.log(`  Unhandled event type: ${eventType} (templateKey: ${templateKey})`);
     return res.status(200).json({ ok: true, handled: false });
