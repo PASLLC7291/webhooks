@@ -2,8 +2,23 @@ const express = require("express");
 const { createClient } = require("redis");
 
 const app = express();
-app.use(express.json());
-app.use(express.text({ type: "*/*" }));  // Fallback: capture raw text if not JSON
+
+// BASTA sends webhooks with NO Content-Type header.
+// express.json() and express.text() both skip bodies with no content-type.
+// This custom middleware reads the raw body and tries to JSON.parse it.
+app.use((req, res, next) => {
+  if (req.method !== "POST") return next();
+  let body = "";
+  req.on("data", (chunk) => { body += chunk.toString(); });
+  req.on("end", () => {
+    try {
+      req.body = body ? JSON.parse(body) : {};
+    } catch (e) {
+      req.body = { _raw: body };
+    }
+    next();
+  });
+});
 
 const PORT = process.env.PORT || 3001;
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
@@ -99,22 +114,12 @@ const actionMap = {
 app.post("/webhook", async (req, res) => {
   const payload = req.body;
 
-  // Log headers + raw payload so we can see exactly what BASTA sends
-  console.log(`[WEBHOOK HEADERS] content-type=${req.headers["content-type"]}`);
-  console.log(`[WEBHOOK RAW] ${typeof payload === "string" ? payload : JSON.stringify(payload)}`);
-
-  // If body came as string (non-JSON content-type), try to parse it
-  let parsed = payload;
-  if (typeof payload === "string") {
-    try { parsed = JSON.parse(payload); } catch (e) {
-      console.log(`  Could not parse string body: ${e.message}`);
-      return res.status(200).json({ ok: true, handled: false, error: "unparseable body" });
-    }
-  }
+  // Log raw payload so we can see exactly what BASTA sends
+  console.log(`[WEBHOOK RAW] ${JSON.stringify(payload)}`);
 
   // Try every possible field name BASTA might use
-  const eventType = parsed.type || parsed.eventType || parsed.action || parsed.actionType || parsed.event;
-  const data = parsed.data || parsed.payload || parsed;
+  const eventType = payload.type || payload.eventType || payload.action || payload.actionType || payload.event;
+  const data = payload.data || payload.payload || payload;
 
   console.log(`[WEBHOOK] ${eventType}`);
 
