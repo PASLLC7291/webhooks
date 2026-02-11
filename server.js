@@ -83,17 +83,35 @@ const templates = {
   },
 };
 
+// --- BASTA action name → template key mapping ---
+const actionMap = {
+  BID_ON_ITEM: "BidOnItemV2",
+  ITEM_STATUS_CHANGED: "ItemStatusChangedV2",
+  SALE_STATUS_CHANGED: "SaleStatusChangedV2",
+  // Also support the template keys directly (for manual curl tests)
+  BidOnItemV2: "BidOnItemV2",
+  ItemStatusChangedV2: "ItemStatusChangedV2",
+  SaleStatusChangedV2: "SaleStatusChangedV2",
+};
+
 // --- Webhook endpoint ---
 app.post("/webhook", async (req, res) => {
   const payload = req.body;
-  const eventType = payload.type || payload.eventType;
-  const data = payload.data || payload;
+
+  // Log raw payload so we can see exactly what BASTA sends
+  console.log(`[WEBHOOK RAW] ${JSON.stringify(payload)}`);
+
+  // Try every possible field name BASTA might use
+  const eventType = payload.type || payload.eventType || payload.action || payload.actionType || payload.event;
+  const data = payload.data || payload.payload || payload;
 
   console.log(`[WEBHOOK] ${eventType}`);
 
-  const mapper = templates[eventType];
+  // Map BASTA action names to template keys
+  const templateKey = actionMap[eventType] || eventType;
+  const mapper = templates[templateKey];
   if (!mapper) {
-    console.log(`  Unhandled event type: ${eventType}`);
+    console.log(`  Unhandled event type: ${eventType} (templateKey: ${templateKey})`);
     return res.status(200).json({ ok: true, handled: false });
   }
 
